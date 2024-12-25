@@ -1,0 +1,536 @@
+<!-- <!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>Consensus Corner</title>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+  <link href="posts.css" rel="stylesheet">
+
+  <link rel="icon" type="image/png" href="image.png">
+
+
+</head>
+
+<body>
+  <button id="logoutButton" onclick="logoutUser()" style="position: absolute; top: 10px; left: 10px;">Logout</button>
+
+
+
+
+  <button id="createButton" onclick="toggleCreateModal()">Create Policy Proposal</button>
+
+  <div id="overlay" onclick="toggleCreateModal()"></div>
+
+  <div id="createModal">
+    <h1>Create Policy Proposal</h1>
+    <label for="createTitle">Title:</label>
+    <input type="text" id="titleInput" name="titleInput" placeholder="Title">
+    <label for="descInput">Description:</label>
+    <input type="text" id="descInput" name="descInput" placeholder="Share a thought...">
+    <button onclick="submitPost()">Submit</button>
+  </div>
+  <div class="searchPlace">
+    <input type="text" id="searchInput" placeholder="Search posts...">
+    <button class="viewmore" onclick="displayPosts()">Search</button>
+  </div>
+  <div id="postsContainer"></div>
+
+
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="row">
+        <div class="col-sm-12 col-md-6">
+          <h6>About</h6>
+          <p class="text-justify">Communities are always developing and that cannot be done without the ideas of the
+            people within these communities. The purpose behind this website was to create a safe space for individuals
+            to propose policies. Not only create, but to be able to vote for or against policies and explain their
+            decision.</p>
+        </div>
+
+        <div class="col-sm-12 col-md-3">
+          <h6>Contact</h6>
+          <p class="text-justify">For inquiries, please email us at: <a
+              href="ccalinterns5@gmail.com">ccalinterns5@gmail.com</a></p>
+        </div>
+
+        <div class="col-sm-12 col-md-3">
+          <div class="container">
+            <div class="row">
+              <div class="col-md-12">
+                <p class="copyright-text">Copyright &copy; 2024 All Rights Reserved by <a href="#">CCAL</a>.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script type="module">
+    // Firebase setup
+    import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import {getFirestore, collection, addDoc, getDocs, doc, updateDoc, getDoc, arrayUnion, increment, arrayRemove} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+    import {getAuth, onAuthStateChanged} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+
+    const firebaseConfig = {
+
+      apiKey: "AIzaSyAEZI3iAy8dAOeQzW-UmZ2Ax5zdIELvFFk",
+
+      authDomain: "ccal-policy.firebaseapp.com",
+
+      projectId: "ccal-policy",
+
+      storageBucket: "ccal-policy.appspot.com",
+
+      messagingSenderId: "922662784586",
+
+      appId: "1:922662784586:web:780f264aa931d792f760b3",
+
+      measurementId: "G-36WZW1PBNG"
+
+    };
+
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const auth = getAuth(app);
+    let publicKey, privateKey;
+
+    window.onload = async function () {
+      onAuthStateChanged(auth, async (user) => {
+        if (user) {
+          // Retrieve keys
+          await loadUserKeys(user);
+          displayPosts();
+        } else {
+          alert('You need to sign in to create a post.');
+          window.location.href = 'signin.html';
+        }
+      });
+    };
+
+    async function loadUserKeys(user) {
+      try {
+        // Fetch public key from Firestore
+        const userDoc = await getDoc(doc(db, "users", user.uid));
+        if (userDoc.exists()) {
+          publicKey = await window.crypto.subtle.importKey(
+            "jwk",
+            userDoc.data().publicKey,
+            {
+              name: "RSASSA-PKCS1-v1_5",
+              hash: {name: "SHA-256"}
+            },
+            true,
+            ["verify"]
+          );
+        } else {
+          throw new Error('Public key not found in Firestore.');
+        }
+
+        // Fetch private key from IndexedDB
+        const privateKeyJWK = await retrievePrivateKey(user.uid);
+        if (privateKeyJWK) {
+          privateKey = await window.crypto.subtle.importKey(
+            "jwk",
+            privateKeyJWK,
+            {
+              name: "RSASSA-PKCS1-v1_5",
+              hash: {name: "SHA-256"}
+            },
+            true,
+            ["sign"]
+          );
+        } else {
+          throw new Error('Private key not found in IndexedDB.');
+        }
+      } catch (error) {
+        console.error("Error loading user keys: ", error);
+      }
+    }
+
+    async function retrievePrivateKey(userId) {
+      const db = await openIndexedDB();
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction("privateKeys", "readonly");
+        const store = transaction.objectStore("privateKeys");
+        const request = store.get(userId);
+        request.onsuccess = (event) => {
+          resolve(event.target.result ? event.target.result.privateKey : null);
+        };
+        request.onerror = (event) => reject(event.target.error);
+      });
+    }
+
+    function openIndexedDB() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open("keysDB", 1);
+        request.onupgradeneeded = (event) => {
+          const db = event.target.result;
+          db.createObjectStore("privateKeys", {keyPath: "userId"});
+        };
+        request.onsuccess = (event) => resolve(event.target.result);
+        request.onerror = (event) => reject(event.target.error);
+      });
+    }
+
+    async function signData(data) {
+      const encoder = new TextEncoder();
+      const encodedData = encoder.encode(data);
+      return await window.crypto.subtle.sign(
+        {name: "RSASSA-PKCS1-v1_5"},
+        privateKey,
+        encodedData
+      );
+    }
+
+
+
+    window.toggleCreateModal = function toggleCreateModal() {
+      let modal = document.getElementById("createModal");
+      let overlay = document.getElementById("overlay");
+      if (modal.style.display === "block") {
+        modal.style.display = "none";
+        overlay.style.display = "none";
+      } else {
+        modal.style.display = "block";
+        overlay.style.display = "block";
+      }
+    };
+
+    window.submitPost = async function submitPost() {
+      const user = auth.currentUser;
+      if (!user) {
+        alert('You must be signed in to create a post.');
+        return;
+      }
+
+      let title = document.getElementById("titleInput").value;
+      let desc = document.getElementById("descInput").value;
+      const postData = `${title}:${desc}`;
+      const signature = await signData(postData);
+
+      try {
+        await addDoc(collection(db, "posts"), {
+          title: title,
+          desc: desc,
+          createdAt: new Date(),
+          signature: Array.from(new Uint8Array(signature)),
+          publicKey: await window.crypto.subtle.exportKey("jwk", publicKey),
+          userId: user.uid,
+          username: user.email,
+          upvotes: [],
+          downvotes: [],
+          comments: []
+        });
+        toggleCreateModal();
+        displayPosts();
+      } catch (e) {
+        console.error("Error adding document: ", e);
+      }
+    };
+    // window.displayPosts = async function displayPosts() {
+    //   const searchQuery = document.getElementById("searchInput").value.toLowerCase();
+    //   const postsContainer = document.getElementById("postsContainer");
+    //   postsContainer.innerHTML = "";
+
+    //   try {
+    //     const querySnapshot = await getDocs(collection(db, "posts"));
+    //     querySnapshot.forEach(async (doc) => {
+    //       const post = doc.data();
+    //       if (post.title.toLowerCase().includes(searchQuery) || post.desc.toLowerCase().includes(searchQuery)) {
+    //         const postElement = document.createElement("div");
+    //         postElement.classList.add("post");
+
+    //         // Fetch the public key stored in Firebase for this post
+    //         const publicKey = await window.crypto.subtle.importKey(
+    //           "jwk",
+    //           post.publicKey,
+    //           {
+    //             name: "RSASSA-PKCS1-v1_5",
+    //             hash: { name: "SHA-256" }
+    //           },
+    //           true,
+    //           ["verify"]
+    //         );
+
+    //         // Verify the signature using the fetched public key
+    //         const isValid = await verifySignature(`${post.title}:${post.desc}`, new Uint8Array(post.signature), publicKey);
+
+    //         postElement.innerHTML = `
+    //           <h2>${post.title}</h2>
+    //           <p>${post.desc}</p>
+    //           <small>Posted on: ${new Date(post.createdAt.seconds * 1000).toLocaleString()}</small>
+    //           <p>Signature Valid: ${isValid}</p>
+    //           <p>User ID: ${post.userId}</p>
+    //           <div class="dropdown">
+    //             <button class="dropdown-toggle">Show Details</button>
+    //             <div class="dropdown-content">
+    //               <p><strong>Public Key:</strong> ${JSON.stringify(post.publicKey)}</p>
+    //               <p><strong>Signature:</strong> ${JSON.stringify(post.signature)}</p>
+    //             </div>
+    //           </div>
+    //           <div class="vote-buttons">
+    //             <button class="upvote" onclick="vote('${doc.id}', 'upvote')">Upvote (${post.upvotes})</button>
+    //             <button class="downvote" onclick="vote('${doc.id}', 'downvote')">Downvote (${post.downvotes})</button>
+    //           </div>
+    //           <div class="comment-section">
+    //             <input type="text" id="commentInput-${doc.id}" placeholder="Add a comment...">
+    //             <button onclick="submitComment('${doc.id}')">Comment</button>
+    //             <div class="comments">
+    //               ${(post.comments || []).map(comment => `<div class="comment"><p>${comment.text}</p><small>${new Date(comment.createdAt.seconds * 1000).toLocaleString()}</small></div>`).join('')}
+    //             </div>
+    //           </div>
+    //         `;
+    //         postsContainer.appendChild(postElement);
+    //       }
+    //     });
+    //   } catch (e) {
+    //     console.error("Error fetching posts: ", e);
+    //   }
+    // };
+
+    async function verifySignature(data, signature, publicKey) {
+      const encoder = new TextEncoder();
+      const encodedData = encoder.encode(data);
+      return await window.crypto.subtle.verify(
+        {name: "RSASSA-PKCS1-v1_5"},
+        publicKey,
+        signature,
+        encodedData
+      );
+    }
+
+    window.displayPosts = async function displayPosts() {
+      const searchQuery = document.getElementById("searchInput").value.toLowerCase();
+      const postsContainer = document.getElementById("postsContainer");
+      postsContainer.innerHTML = "";
+
+      try {
+        const querySnapshot = await getDocs(collection(db, "posts"));
+        querySnapshot.forEach(async (doc) => {
+          const post = doc.data();
+          if (post.title.toLowerCase().includes(searchQuery) || post.desc.toLowerCase().includes(searchQuery)) {
+            const postElement = document.createElement("div");
+            postElement.classList.add("post");
+
+            // Fetch the public key stored in Firebase for this post
+            const publicKey = await window.crypto.subtle.importKey(
+              "jwk",
+              post.publicKey,
+              {
+                name: "RSASSA-PKCS1-v1_5",
+                hash: {name: "SHA-256"}
+              },
+              true,
+              ["verify"]
+            );
+
+            // Verify the signature using the fetched public key
+            const isValid = await verifySignature(`${post.title}:${post.desc}`, new Uint8Array(post.signature), publicKey);
+
+            // Convert the JWK to PEM format for display
+            const pemPublicKey = convertJwkToPem(post.publicKey);
+            // Convert the signature array to a base64 string
+            const base64Signature = convertSignatureToBase64(post.signature);
+
+            postElement.innerHTML = `
+                      <h2>${post.title}</h2>
+                      <p>${post.desc.length > 100 ? post.desc.substring(0, 100) + '...' : post.desc}</p>
+                      <button class='viewmore' style='margin-bottom:10px;' onclick="viewMore('${doc.id}')">View More</button><br/>
+                      <small>Posted on: ${new Date(post.createdAt.seconds * 1000).toLocaleString()}</small>
+                      <p>Signature Valid: ${isValid}</p>
+                      <p>Username: ${post.username.split("@")[0]}</p>
+                      <div class="dropdown">
+                        <button class="dropdown-toggle">Show Details</button>
+                        <div class="dropdown-content">
+                          <p><strong>Public Key (PEM):</strong></p>
+                          <pre>${pemPublicKey}</pre>
+                          <p><strong>Signature (Base64):</strong> ${base64Signature}</p>
+                        </div>
+                      </div>
+                      <div class="vote-buttons">
+                        <div class="vote-dropdown">
+                          <button class="upvote" onclick="vote('${doc.id}', 'upvote')">Upvote (${post.upvotes.length ? post.upvotes.length : 0})</button>
+                          <div class="vote-dropdown-content">
+                            <ul class="vote-dropdown-list">
+                              ${post.upvotes.map(username => `<li>${username}</li>`).join('')}
+                            </ul>
+                          </div>
+                        </div>
+                        <div class="vote-dropdown">
+                          <button class="downvote" onclick="vote('${doc.id}', 'downvote')">Downvote (${post.downvotes.length ? post.downvotes.length : 0})</button>
+                          <div class="vote-dropdown-content">
+                            <ul class="vote-dropdown-list">
+                              ${post.downvotes.map(username => `<li>${username}</li>`).join('')}
+                            </ul>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="comment-section">
+                        <input type="text" id="commentInput-${doc.id}" placeholder="Add a comment...">
+                        <button onclick="submitComment('${doc.id}')">Comment</button>
+                        <div class="comments">
+                          ${(post.comments || []).map(comment => `<div class="comment"><p>${comment.text}</p><br/><p>${comment.userEmail.split("@")[0]}</p><small>${new Date(comment.createdAt.seconds * 1000).toLocaleString()}</small></div>`).join('')}
+                        </div>
+                      </div>
+                      <div id="modal-${doc.id}" class="modal">
+                        <div class="modal-content">
+                          <span class="close" onclick="closeModal('${doc.id}')">&times;</span>
+                          <h2>${post.title}</h2>
+                          <p>${post.desc}</p>
+                        </div>
+                      </div>
+                    `;
+            postsContainer.appendChild(postElement);
+          }
+        });
+      } catch (e) {
+        console.error("Error fetching posts: ", e);
+      }
+    };
+
+    // Modal for description
+    window.viewMore = function viewMore(postId) {
+      document.getElementById(`modal-${postId}`).style.display = "block";
+    };
+
+    window.closeModal = function closeModal(postId) {
+      document.getElementById(`modal-${postId}`).style.display = "none";
+    };
+
+    // Convert JWK to PEM format
+    function convertJwkToPem(jwk) {
+      const n = base64UrlToBase64(jwk.n);
+      const e = base64UrlToBase64(jwk.e);
+
+      const modulus = atob(n);
+      const exponent = atob(e);
+
+      const modulusHex = Array.from(modulus, char => ('0' + char.charCodeAt(0).toString(16)).slice(-2)).join('');
+      const exponentHex = Array.from(exponent, char => ('0' + char.charCodeAt(0).toString(16)).slice(-2)).join('');
+
+      const modulusLength = modulus.length.toString(16).padStart(4, '0');
+      const exponentLength = exponent.length.toString(16).padStart(2, '0');
+
+      const der = `3082${(modulus.length + exponent.length + 15).toString(16).padStart(4, '0')}0201000282${modulusLength}${modulusHex}0203${exponentLength}${exponentHex}`;
+
+      const derBytes = hexToBytes(der);
+      const pemKey = `-----BEGIN PUBLIC KEY-----\n${arrayBufferToBase64(derBytes)}\n-----END PUBLIC KEY-----`;
+
+      return pemKey.replace(/(.{64})/g, '$1\n');
+    }
+
+    // Convert Base64URL to Base64
+    function base64UrlToBase64(base64UrlString) {
+      return base64UrlString.replace(/-/g, '+').replace(/_/g, '/').padEnd(base64UrlString.length + (4 - (base64UrlString.length % 4)) % 4, '=');
+    }
+
+    // Convert hexadecimal string to bytes
+    function hexToBytes(hex) {
+      const bytes = [];
+      for (let c = 0; c < hex.length; c += 2) {
+        bytes.push(parseInt(hex.substr(c, 2), 16));
+      }
+      return new Uint8Array(bytes);
+    }
+
+    // Convert ArrayBuffer to Base64 string
+    function arrayBufferToBase64(buffer) {
+      const binary = String.fromCharCode(...new Uint8Array(buffer));
+      return btoa(binary);
+    }
+
+    // Convert signature array to base64 string
+    function convertSignatureToBase64(signatureArray) {
+      const uint8Array = new Uint8Array(signatureArray);
+      return arrayBufferToBase64(uint8Array);
+    }
+
+
+
+
+
+
+
+
+    window.vote = async function vote(postId, type) {
+      const postRef = doc(db, "posts", postId);
+      let currId = auth.currentUser.uid;
+      let currUsername = auth.currentUser.email.split("@")[0];
+      let postDoc = await getDoc(postRef)
+      try {
+        if (type === 'upvote') {
+          let likes = postDoc.data().upvotes;
+          if (likes.includes(currUsername)) {
+            await updateDoc(postRef, {
+              upvotes: arrayRemove(currUsername)
+            });
+          } else {
+            await updateDoc(postRef, {
+              upvotes: arrayUnion(currUsername),
+              downvotes: arrayRemove(currUsername)
+            });
+          }
+        } else if (type === 'downvote') {
+          let dislikes = postDoc.data().downvotes;
+          if (dislikes.includes(currUsername)) {
+            await updateDoc(postRef, {
+              downvotes: arrayRemove(currUsername)
+            })
+          } else {
+            await updateDoc(postRef, {
+              downvotes: arrayUnion(currUsername),
+              upvotes: arrayRemove(currUsername)
+            });
+          }
+        }
+        displayPosts();
+      } catch (e) {
+        console.error("Error updating document: ", e);
+      }
+    };
+
+    window.submitComment = async function submitComment(postId) {
+      const commentInput = document.getElementById(`commentInput-${postId}`);
+      const commentText = commentInput.value;
+
+      if (commentText.trim() === "") {
+        return;
+      }
+      const user = auth.currentUser;
+      const postRef = doc(db, "posts", postId);
+      try {
+        await updateDoc(postRef, {
+          comments: arrayUnion({
+            userEmail: user.email,
+            text: commentText,
+            createdAt: new Date()
+          })
+        });
+        commentInput.value = "";
+        displayPosts();
+      } catch (e) {
+        console.error("Error updating document: ", e);
+      }
+    };
+
+
+
+
+    window.logoutUser = async function logoutUser() {
+      try {
+        await auth.signOut();
+        window.location.href = 'signin.html'; // Redirect to sign-in page after logout
+      } catch (error) {
+        console.error("Error signing out: ", error);
+      }
+    };
+
+  </script>
+</body>
+
+</html> -->

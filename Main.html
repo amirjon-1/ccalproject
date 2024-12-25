@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>Consensus Corner</title>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+  <link href="posts.css" rel="stylesheet">
+  <link rel="icon" type="image/png" href="image.png">
+  <script src="https://cdn.jsdelivr.net/npm/openpgp@5.0.0/dist/openpgp.min.js"></script>
+</head>
+
+<body>
+  <button id="logoutButton" onclick="logoutUser()" style="position: absolute; top: 10px; left: 10px;">Logout</button>
+
+  <button id="createButton" onclick="toggleCreateModal()">Create Policy Proposal</button>
+
+  <div id="overlay" onclick="toggleCreateModal()"></div>
+
+  <div id="createModal">
+    <h1>Create Policy Proposal</h1>
+    <label for="createTitle">Title:</label>
+    <input type="text" id="titleInput" name="titleInput" placeholder="Title">
+    <label for="descInput">Description:</label>
+    <input type="text" id="descInput" name="descInput" placeholder="Share a thought...">
+    <label for="privateKeyFile">Upload Private Key (ASC):</label>
+    <input type="file" id="privateKeyFile" name="privateKeyFile" accept=".asc,.txt" required>
+    <button onclick="submitPost()">Submit</button>
+  </div>
+
+  <div class="searchPlace">
+    <input type="text" id="searchInput" placeholder="Search posts...">
+    <button class="viewmore" onclick="displayPosts()">Search</button>
+  </div>
+
+  <div id="postsContainer"></div>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="row">
+        <div class="col-sm-12 col-md-6">
+          <h6>About</h6>
+          <p class="text-justify">Communities are always developing and that cannot be done without the ideas of the
+            people within these communities. The purpose behind this website was to create a safe space for individuals
+            to propose policies. Not only create, but to be able to vote for or against policies and explain their
+            decision.</p>
+        </div>
+
+        <div class="col-sm-12 col-md-3">
+          <h6>Contact</h6>
+          <p class="text-justify">For inquiries, please email us at: <a
+              href="mailto:ccalinterns5@gmail.com">ccalinterns5@gmail.com</a></p>
+        </div>
+
+        <div class="col-sm-12 col-md-3">
+          <div class="container">
+            <div class="row">
+              <div class="col-md-12">
+                <p class="copyright-text">Copyright &copy; 2024 All Rights Reserved by <a href="#">CCAL</a>.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script type="module">
+    // Firebase setup
+    import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import {getFirestore, collection, addDoc, getDocs, doc, updateDoc, getDoc, arrayUnion, increment, arrayRemove} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+    import {getAuth, onAuthStateChanged} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyAEZI3iAy8dAOeQzW-UmZ2Ax5zdIELvFFk",
+      authDomain: "ccal-policy.firebaseapp.com",
+      projectId: "ccal-policy",
+      storageBucket: "ccal-policy.appspot.com",
+      messagingSenderId: "922662784586",
+      appId: "1:922662784586:web:780f264aa931d792f760b3",
+      measurementId: "G-36WZW1PBNG"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const auth = getAuth(app);
+    let publicKey;
+
+    window.onload = async function () {
+      onAuthStateChanged(auth, async (user) => {
+        if (user) {
+          // Load user's public key in ASC format
+          await loadUserPublicKey(user);
+          displayPosts();
+        } else {
+          alert('You need to sign in to create a post.');
+          window.location.href = 'signin.html';
+        }
+      });
+    };
+
+    async function loadUserPublicKey(user) {
+      try {
+        const userDoc = await getDoc(doc(db, "users", user.uid));
+        if (userDoc.exists()) {
+          const publicKeyContent = userDoc.data().publicKey;
+          publicKey = publicKeyContent;
+          const link = document.createElement("a");
+          link.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent(publicKey);
+          link.download = "publicKey.asc";
+          link.innerText = "Download your public key";
+          document.body.appendChild(link);
+        } else {
+          throw new Error('Public key not found in Firestore.');
+        }
+      } catch (error) {
+        console.error("Error loading user public key: ", error);
+      }
+    }
+
+    async function signData(data, privateKey) {
+      const message = await openpgp.createMessage({text: data});
+      const signed = await openpgp.sign({
+        message,
+        signingKeys: privateKey,
+        format: 'armored'
+      });
+      return signed;
+    }
+
+
+
+    async function importPrivateKey(privateKeyContent, passphrase) {
+      const privateKey = await openpgp.readPrivateKey({armoredKey: privateKeyContent});
+      const decryptedPrivateKey = await openpgp.decryptKey({
+        privateKey,
+        passphrase,
+      });
+      return decryptedPrivateKey;
+    }
+
+    window.toggleCreateModal = function toggleCreateModal() {
+      let modal = document.getElementById("createModal");
+      let overlay = document.getElementById("overlay");
+      if (modal.style.display === "block") {
+        modal.style.display = "none";
+        overlay.style.display = "none";
+      } else {
+        modal.style.display = "block";
+        overlay.style.display = "block";
+      }
+    };
+
+    window.submitPost = async function submitPost() {
+      const user = auth.currentUser;
+      if (!user) {
+        alert('You must be signed in to create a post.');
+        return;
+      }
+
+      const title = document.getElementById("titleInput").value;
+      const desc = document.getElementById("descInput").value;
+      const privateKeyFile = document.getElementById("privateKeyFile").files[0];
+
+      if (!privateKeyFile) {
+        alert('Please upload your private key.');
+        return;
+      }
+
+      const passphrase = prompt("Enter your passphrase to use your private key:");
+
+      const reader = new FileReader();
+      reader.onload = async function (event) {
+        const privateKeyContent = event.target.result;
+        try {
+          const privateKey = await importPrivateKey(privateKeyContent, passphrase);
+          const postData = `${title}:${desc}`;
+          const signature = await signData(postData, privateKey);
+
+          await addDoc(collection(db, "posts"), {
+            title: title,
+            desc: desc,
+            createdAt: new Date(),
+            signature: signature,
+            publicKey: publicKey,
+            userId: user.uid,
+            username: user.email,
+            upvotes: [],
+            downvotes: [],
+            comments: []
+          });
+
+          toggleCreateModal();
+          displayPosts();
+        } catch (e) {
+          console.error("Error creating post: ", e);
+        }
+      };
+
+      reader.readAsText(privateKeyFile);
+    };
+    window.displayPosts = async function displayPosts() {
+      const searchQuery = document.getElementById("searchInput").value.toLowerCase();
+      const postsContainer = document.getElementById("postsContainer");
+      postsContainer.innerHTML = "";
+
+      try {
+        const querySnapshot = await getDocs(collection(db, "posts"));
+        querySnapshot.forEach(async (doc) => {
+          const post = doc.data();
+          if (post.title.toLowerCase().includes(searchQuery) || post.desc.toLowerCase().includes(searchQuery)) {
+            const postElement = document.createElement("div");
+            postElement.classList.add("post");
+
+
+            let signatureContent = post.signature
+              .replace(/(-----BEGIN PGP MESSAGE-----|-----END PGP MESSAGE-----)/g, "")
+              .replace(/\s+/g, '')
+              .replace(/(.{64})/g, "$1\n");
+
+            const signatureFormatted = `
+-----BEGIN PGP MESSAGE-----
+Version: Keybase OpenPGP v2.0.76
+Comment: https://keybase.io/crypto
+
+${signatureContent}
+-----END PGP MESSAGE-----
+                    `.trim();
+
+            const publicKeyLink = `<a href="data:text/plain;charset=utf-8,${encodeURIComponent(post.publicKey)}" download="publicKey.asc">Download Public Key</a>`;
+
+            postElement.innerHTML = `
+                      <h2>${post.title}</h2>
+                     <p>${post.desc.length > 100 ? post.desc.substring(0, 100) + '...' : post.desc}</p>
+                      <button class='viewmore' style='margin-bottom:10px;' onclick="viewMore('${doc.id}')">View More</button><br/>
+                      <small>Posted on: ${new Date(post.createdAt.seconds * 1000).toLocaleString()}</small>
+                      <p>Username: ${post.username.split("@")[0]}</p>
+                      <div class="dropdown">
+                        <button class="dropdown-toggle">Show Details</button>
+                        <div class="dropdown-content">
+                          <p><strong>Public Key:</strong></p>
+                          ${publicKeyLink}
+                          <p><strong>Signature:</strong></p>
+                          <pre>${signatureFormatted}</pre> <!-- Wrap the formatted signature in a <pre> block for proper formatting -->
+                        </div>
+                      </div>
+    <div class="vote-buttons">
+                        <div class="vote-dropdown">
+                          <button class="upvote" onclick="vote('${doc.id}', 'upvote')">Upvote (${post.upvotes.length ? post.upvotes.length : 0})</button>
+                          <div class="vote-dropdown-content">
+                            <ul class="vote-dropdown-list">
+                              ${post.upvotes.map(username => `<li>${username}</li>`).join('')}
+                            </ul>
+                          </div>
+                        </div>
+                        <div class="vote-dropdown">
+                          <button class="downvote" onclick="vote('${doc.id}', 'downvote')">Downvote (${post.downvotes.length ? post.downvotes.length : 0})</button>
+                          <div class="vote-dropdown-content">
+                            <ul class="vote-dropdown-list">
+                              ${post.downvotes.map(username => `<li>${username}</li>`).join('')}
+                            </ul>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="comment-section">
+                        <input type="text" id="commentInput-${doc.id}" placeholder="Add a comment...">
+                        <button onclick="submitComment('${doc.id}')">Comment</button>
+                        <div class="comments">
+                          ${(post.comments || []).map(comment => `<div class="comment"><p>${comment.text}</p><br/><p>${comment.userEmail.split("@")[0]}</p><small>${new Date(comment.createdAt.seconds * 1000).toLocaleString()}</small></div>`).join('')}
+                        </div>
+                      </div>
+                      <div id="modal-${doc.id}" class="modal">
+                        <div class="modal-content">
+                          <span class="close" onclick="closeModal('${doc.id}')">&times;</span>
+                          <h2>${post.title}</h2>
+                          <p>${post.desc}</p>
+                        </div>
+                      </div>
+                    `;
+            postsContainer.appendChild(postElement);
+          }
+        });
+      } catch (e) {
+        console.error("Error fetching posts: ", e);
+      }
+    };
+
+
+
+    window.viewMore = function viewMore(postId) {
+      document.getElementById(`modal-${postId}`).style.display = "block";
+    };
+
+    window.closeModal = function closeModal(postId) {
+      document.getElementById(`modal-${postId}`).style.display = "none";
+    };
+
+
+    // async function verifySignature(data, signature, publicKeyContent) {
+    //   try {
+    //     console.log("Received Signature:", signature);
+
+    //     const publicKey = await openpgp.readKey({ armoredKey: publicKeyContent });
+    //     const signatureObj = await openpgp.readSignature({ armoredSignature: signature });
+
+    //     const message = await openpgp.createMessage({ text: data });
+
+    //     const verificationResult = await openpgp.verify({
+    //       message,
+    //       signature: signatureObj,
+    //       verificationKeys: publicKey
+    //     });
+
+    //     return verificationResult.signatures[0].verified; // Returns true if the signature is valid
+    //   } catch (error) {
+    //     console.error("Error during signature verification:", error);
+    //     return false;
+    //   }
+    // }
+
+
+    window.vote = async function vote(postId, type) {
+      const postRef = doc(db, "posts", postId);
+      const currUsername = auth.currentUser.email.split("@")[0];
+      const postDoc = await getDoc(postRef);
+      try {
+        if (type === 'upvote') {
+          let likes = postDoc.data().upvotes;
+          if (likes.includes(currUsername)) {
+            await updateDoc(postRef, {
+              upvotes: arrayRemove(currUsername)
+            });
+          } else {
+            await updateDoc(postRef, {
+              upvotes: arrayUnion(currUsername),
+              downvotes: arrayRemove(currUsername)
+            });
+          }
+        } else if (type === 'downvote') {
+          let dislikes = postDoc.data().downvotes;
+          if (dislikes.includes(currUsername)) {
+            await updateDoc(postRef, {
+              downvotes: arrayRemove(currUsername)
+            });
+          } else {
+            await updateDoc(postRef, {
+              downvotes: arrayUnion(currUsername),
+              upvotes: arrayRemove(currUsername)
+            });
+          }
+        }
+        displayPosts();
+      } catch (e) {
+        console.error("Error updating document: ", e);
+      }
+    };
+
+    window.submitComment = async function submitComment(postId) {
+      const commentInput = document.getElementById(`commentInput-${postId}`);
+      const commentText = commentInput.value;
+
+      if (commentText.trim() === "") {
+        return;
+      }
+      const user = auth.currentUser;
+      const postRef = doc(db, "posts", postId);
+      try {
+        await updateDoc(postRef, {
+          comments: arrayUnion({
+            userEmail: user.email,
+            text: commentText,
+            createdAt: new Date()
+          })
+        });
+        commentInput.value = "";
+        displayPosts();
+      } catch (e) {
+        console.error("Error updating document: ", e);
+      }
+    };
+
+    window.logoutUser = async function logoutUser() {
+      try {
+        await auth.signOut();
+        window.location.href = 'signin.html'; // Redirect to sign-in page after logout
+      } catch (error) {
+        console.error("Error signing out: ", error);
+      }
+    };
+  </script>
+</body>
+
+</html>
